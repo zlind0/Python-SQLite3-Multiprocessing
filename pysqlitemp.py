@@ -188,7 +188,7 @@ class MPSQLite3:
                     for r in tqdm.tqdm(res,total=tot):
                         yield r
 
-    def ComplexTableProcess(self, select_stmt, command=None, taskname=None, progressbar=True, processes=1, mp_chunk=100):
+    def ComplexTableProcess(self, select_stmt, command=None, taskname=None, use_cached=False, progressbar=True, processes=1, mp_chunk=100):
         self.con.commit()
         if command is None: taskname="empty_command"
         if taskname is None: taskname=command.__name__
