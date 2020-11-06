@@ -190,8 +190,7 @@ class MPSQLite3:
             else:
                 with multiprocessing.Pool(processes=processes, maxtasksperchild=mp_chunk) as po:
                     res=po.imap(command, MPRowGen(storagepath, stmt), chunksize=mp_chunk)
-                    for r in tqdm.tqdm(res,total=tot):
-                        yield r
+                    for r in tqdm.tqdm(res,total=tot): yield r
 
     def TableProcessSimple(self, tablename, command=None, columns="*", where="", progressbar=True,
                            processes=1, mp_chunk=100, storagepath=None):
@@ -220,11 +219,12 @@ class MPSQLite3:
             self.existingtmptable.add(tmptbname)
             self.con.execute(f"DROP TABLE IF EXISTS TMP.{tmptbname}")
             self.con.execute(f"CREATE TABLE TMP.{tmptbname} AS {stmt}")
+        else:
+            print("[Info]Cache hit.")
         self.con.commit()
-        for item in self.TableProcessSimple(tmptbname, command, progressbar=progressbar, processes=processes,mp_chunk=mp_chunk,
-            storagepath=self.tmpstoragepath):
-            yield item
-
+        return self.TableProcessSimple(tmptbname, command, progressbar=progressbar, processes=processes,mp_chunk=mp_chunk,
+            storagepath=self.tmpstoragepath)
+    
     def CacheSave(self, tuples_iter, tmptbname="empty_task"):
         self.cache[tmptbname]=tuples_iter
 
