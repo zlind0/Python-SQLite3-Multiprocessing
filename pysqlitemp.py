@@ -20,7 +20,7 @@ class MPSQLite3Mini:
         self.cachecon=sqlite3.connect(self.cachestoragepath)
 
     def __setitem__(self, tmptbname, tuples_iter):
-        self.cachecon=sqlite3.connect(self.cachestoragepath)
+        self.cachecon.execute(f"DROP TABLE {tmptbname}")
         first=True
         insertstmt=""
         for entry in tuples_iter:
@@ -61,6 +61,7 @@ class MPSQLite3:
         self.con.execute("CREATE INDEX IF NOT EXISTS _IDX_KeyBLOB ON _KeyValue(key)")
         self.con.execute("ATTACH ? AS TMP", (self.tmpstoragepath,))
         self.existingtable=set()
+        self.existingtmptable=set()
     def __del__(self):
         self.con.commit()
 
@@ -206,8 +207,19 @@ class MPSQLite3:
         self.con.commit()
         if command is None: tmptbname="empty_command"
         if tmptbname is None: tmptbname=command.__name__
-        self.con.execute(f"DROP TABLE IF EXISTS TMP.{tmptbname}")
-        self.con.execute(f"CREATE TABLE TMP.{tmptbname} AS {stmt}")
+        create_tmptb=True
+        if use_cached==True:
+            if tmptbname in self.existingtmptable:
+                create_tmptb=False
+            else:
+                tables=[t[0] for t in self.con.execute('SELECT tbl_name FROM TMP.sqlite_master WHERE TYPE="table"')]
+                self.existingtmptable=set(tables)
+                if tmptbname in self.existingtmptable:
+                    create_tmptb=False
+        if create_tmptb:
+            self.existingtmptable.add(tmptbname)
+            self.con.execute(f"DROP TABLE IF EXISTS TMP.{tmptbname}")
+            self.con.execute(f"CREATE TABLE TMP.{tmptbname} AS {stmt}")
         self.con.commit()
         for item in self.TableProcessSimple(tmptbname, command, progressbar=progressbar, processes=processes,mp_chunk=mp_chunk,
             storagepath=self.tmpstoragepath):

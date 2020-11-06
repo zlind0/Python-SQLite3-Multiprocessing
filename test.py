@@ -29,7 +29,8 @@ if __name__ == "__main__":
     # for _ in sq.SimpleTableProcess("avresults", lambda x: print(tuple(x)), "sha1", "LIMIT 10"):pass
     for _ in sq.TableProcessSimple("avresults", print, "sha1", "LIMIT 10", processes=0):pass
     for _ in sq.TableProcess("SELECT * FROM avclass JOIN avclass2 USING(sha1) LIMIT 10", print, processes=0):pass
-    for _ in sq.TableProcessWithTemp("SELECT * FROM avclass JOIN avclass2 USING(sha1) LIMIT 10", print, processes=0):pass
+    for _ in sq.TableProcessWithTemp("SELECT * FROM avclass JOIN avclass2 USING(sha1) LIMIT 10", print, processes=0, tmptbname="av2"):pass
+    for _ in sq.TableProcessWithTemp("", print, processes=0, tmptbname="av2", use_cached=True):pass
 
     print("==================================\nTEST 5: Cache")
     sq.CacheSave(sq.TableProcessWithTemp("SELECT * FROM avclass JOIN avclass2 USING(sha1) LIMIT 10"))
