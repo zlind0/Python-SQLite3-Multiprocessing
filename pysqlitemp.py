@@ -1,4 +1,4 @@
-import sqlite3, multiprocessing, os, io
+import sqlite3, multiprocessing, os, io, re
 import tabulate, tqdm
 
 # def SimpleTableProcessWrapper(arg):
@@ -19,7 +19,7 @@ class MPSQLite3Mini:
         self.cachestoragepath=path
         self.cachecon=sqlite3.connect(self.cachestoragepath)
 
-    def __setitem__(self, taskname, tuples_iter):
+    def __setitem__(self, tmptbname, tuples_iter):
         self.cachecon=sqlite3.connect(self.cachestoragepath)
         first=True
         insertstmt=""
@@ -27,19 +27,19 @@ class MPSQLite3Mini:
             if first==True:
                 values=",".join(("?" for i in range(0, len(entry))))
                 headers=",".join((f"f{i}" for i in range(0, len(entry))))
-                self.cachecon.execute(f"DROP TABLE IF EXISTS {taskname}")
-                self.cachecon.execute(f"CREATE TABLE {taskname}({headers})")
-                insertstmt=f"INSERT INTO {taskname} VALUES({values})"
+                self.cachecon.execute(f"DROP TABLE IF EXISTS {tmptbname}")
+                self.cachecon.execute(f"CREATE TABLE {tmptbname}({headers})")
+                insertstmt=f"INSERT INTO {tmptbname} VALUES({values})"
                 self.cachecon.execute(insertstmt, entry)
                 break
         self.cachecon.executemany(insertstmt, tuples_iter)
         self.cachecon.commit()
 
-    def __getitem__(self, taskname):
-        return self.cachecon.execute(f"SELECT * FROM {taskname}")
+    def __getitem__(self, tmptbname):
+        return self.cachecon.execute(f"SELECT * FROM {tmptbname}")
 
-    def __delitem__(self, taskname):
-        self.cachecon.execute(f"DROP TABLE {taskname}")
+    def __delitem__(self, tmptbname):
+        self.cachecon.execute(f"DROP TABLE {tmptbname}")
 
 class MPSQLite3:
     path=None
@@ -60,7 +60,7 @@ class MPSQLite3:
         self.con.execute("CREATE TABLE IF NOT EXISTS _KeyBLOB(key UNIQUE,value BLOB)")
         self.con.execute("CREATE INDEX IF NOT EXISTS _IDX_KeyBLOB ON _KeyValue(key)")
         self.con.execute("ATTACH ? AS TMP", (self.tmpstoragepath,))
-
+        self.existingtable=set()
     def __del__(self):
         self.con.commit()
 
@@ -77,15 +77,22 @@ class MPSQLite3:
     def ClearCache(self):
         os.remove(self.cachestoragepath)
 
-    def QueryExec(self, stmt, progressbar=False):
+    def QueryExec(self, stmt, args=(), progressbar=True):
         self.con.commit()
         if progressbar==True:
             totstmt=f"SELECT COUNT(1) FROM ({stmt})"
             # print(totstmt)
-            for item in self.con.execute(totstmt):
+            for item in self.con.execute(totstmt, args):
                 tot=item[0]
-            return tqdm.tqdm(self.con.execute(stmt), total=tot)
+            return tqdm.tqdm(self.con.execute(stmt, args), total=tot)
         else: return self.con.execute(stmt)
+    
+    def QueryExecMany(self, stmt, args=(), progressbar=True, progressbarlen=None):
+        self.con.commit()
+        if progressbar==True:
+            if hasattr(args, '__len__'): progressbarlen=len(args)
+            return self.con.executemany(stmt, tqdm.tqdm(args, total=progressbarlen))
+        else: return self.con.executemany(stmt, args)
 
     def QueryPrint(self, stmt, tabulate_tablefmt="orgtbl"):
         self.con.commit()
@@ -161,15 +168,12 @@ class MPSQLite3:
         for i in range(0, len(lst), n):
             yield lst[i:i + n]
     
-
-    def SimpleTableProcess(self, tablename, command=None, columns="*", where="", progressbar=True,
-                           processes=1, mp_chunk=100, storagepath=None):
+    def TableProcess(self, stmt, command=None, progressbar=True, processes=1, mp_chunk=100, storagepath=None):
         """
         set processes=0 to use all available cores
         """
         self.con.commit()
         if storagepath is None: storagepath=self.path
-        stmt=f"SELECT {columns} FROM {tablename} {where}"
         totstmt=f"SELECT COUNT(1) FROM ({stmt})"
         # print(totstmt)
         for item in self.con.execute(totstmt):
@@ -188,22 +192,67 @@ class MPSQLite3:
                     for r in tqdm.tqdm(res,total=tot):
                         yield r
 
-    def ComplexTableProcess(self, select_stmt, command=None, taskname=None, use_cached=False, progressbar=True, processes=1, mp_chunk=100):
+    def TableProcessSimple(self, tablename, command=None, columns="*", where="", progressbar=True,
+                           processes=1, mp_chunk=100, storagepath=None):
+        """
+        set processes=0 to use all available cores
+        """
         self.con.commit()
-        if command is None: taskname="empty_command"
-        if taskname is None: taskname=command.__name__
-        self.con.execute(f"DROP TABLE IF EXISTS TMP.{taskname}")
-        self.con.execute(f"CREATE TABLE TMP.{taskname} AS {select_stmt}")
+        if storagepath is None: storagepath=self.path
+        stmt=f"SELECT {columns} FROM {tablename} {where}"
+        return self.TableProcess(stmt,command, progressbar,processes, mp_chunk,storagepath)
+
+    def TableProcessWithTemp(self, stmt, command=None, tmptbname=None, use_cached=False, progressbar=True, processes=1, mp_chunk=100):
         self.con.commit()
-        for item in self.SimpleTableProcess(taskname, command, progressbar=progressbar, processes=processes,mp_chunk=mp_chunk,
+        if command is None: tmptbname="empty_command"
+        if tmptbname is None: tmptbname=command.__name__
+        self.con.execute(f"DROP TABLE IF EXISTS TMP.{tmptbname}")
+        self.con.execute(f"CREATE TABLE TMP.{tmptbname} AS {stmt}")
+        self.con.commit()
+        for item in self.TableProcessSimple(tmptbname, command, progressbar=progressbar, processes=processes,mp_chunk=mp_chunk,
             storagepath=self.tmpstoragepath):
             yield item
 
-    def CacheSave(self, tuples_iter, taskname="empty_task"):
-        self.cache[taskname]=tuples_iter
+    def CacheSave(self, tuples_iter, tmptbname="empty_task"):
+        self.cache[tmptbname]=tuples_iter
 
-    def CacheLoad(self, taskname="empty_task"):
-        return self.cache[taskname]
+    def CacheLoad(self, tmptbname="empty_task"):
+        return self.cache[tmptbname]
 
-        
-    
+    def InsertMap(self, datas, tablename):
+        sqlitecon=self.con
+        if tablename not in self.existingtable:
+            sqlitecon.execute(f"CREATE TABLE IF NOT EXISTS {tablename}( id INTEGER PRIMARY KEY AUTOINCREMENT)")
+            self.existingtable.add(tablename)
+        translated_datas={}
+        for k in datas.keys():
+            datask=datas[k]
+            if (not isinstance(datas[k], int)) and (not isinstance(datas[k], float)):
+                datask=str(datask)
+                if datask.isdigit():
+                    datask=int(datask) 
+                elif datask.replace('.','',1).isdigit(): #float number
+                    datask=float(datask)
+            translated_datas[k.translate({ord(c): "_" for c in "!@#$%^&*()[]{};:,./<>?\|`~-=+"})]=datask
+        keys=translated_datas.keys()
+
+        stmt="INSERT OR IGNORE INTO %s(%s) VALUES(%s)"%\
+            (tablename, ','.join(keys), ','.join('?'*len(keys)))
+        while True:
+            try:
+                sqlitecon.execute(stmt, [translated_datas[k] for k in translated_datas])
+                break
+            except sqlite3.OperationalError as e:
+                errmsg=str(e)
+                if 'has no column named' in errmsg:
+                    missingcolname=re.findall(r'has no column named (.*)',errmsg)[0]
+                    if isinstance(translated_datas[missingcolname], int):
+                        sqlitecon.execute(f'ALTER TABLE {tablename} ADD COLUMN {missingcolname} INTEGER')
+                    elif isinstance(translated_datas[missingcolname], float):
+                        sqlitecon.execute(f'ALTER TABLE {tablename} ADD COLUMN {missingcolname} REAL')
+                    else:
+                        sqlitecon.execute(f'ALTER TABLE {tablename} ADD COLUMN {missingcolname} TEXT')
+                    sqlitecon.commit()
+                    print("[Info] Adding missing column", missingcolname)
+                else:
+                    print("[Error]", errmsg)
